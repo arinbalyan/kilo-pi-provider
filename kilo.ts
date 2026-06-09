@@ -90,6 +90,7 @@ interface KiloAccount {
   refreshToken: string;
   expiresAt: number;
   accountId?: string;
+  email?: string;
   balance: number | null;
   consecutiveFailures: number;
   cooldownUntil: number;
@@ -101,6 +102,7 @@ const ACCOUNTS_PATH = join(getAgentDir(), "kilo-accounts.json");
 let _accounts: KiloAccount[] = [];
 let _strategy: "fill-first" | "round-robin" = "round-robin";
 let _roundRobinIndex = 0;
+let _lastActiveAccount: KiloAccount | null = null;
 
 function loadAccounts(): KiloAccount[] {
   try {
@@ -166,6 +168,7 @@ function pickAccount(): KiloAccount | undefined {
   _roundRobinIndex++;
   const account = valid[idx]!;
   account.lastUsed = now;
+  _lastActiveAccount = account;
   return account;
 }
 
@@ -415,15 +418,22 @@ async function loginKilo(
       callbacks.onProgress?.("Login successful!");
 
       const organizationId = await selectKiloOrganization(result.token, callbacks);
+
+      let accountEmail: string | undefined;
+      try {
+        const profile = await fetchKiloProfile(result.token);
+        accountEmail = profile.user?.email || profile.email;
+      } catch {}
+
       const expiresAt = Date.now() + TOKEN_EXPIRATION_MS;
 
-      // Add this account to our multi-account rotation
       const newAccount: KiloAccount = {
         id: `acct-${Date.now()}`,
         accessToken: result.token,
         refreshToken: result.token,
         expiresAt,
         accountId: organizationId,
+        email: accountEmail,
         balance: null,
         consecutiveFailures: 0,
         cooldownUntil: 0,
@@ -431,7 +441,7 @@ async function loginKilo(
       };
       addAccount(newAccount);
 
-      console.warn(`[kilo] Added account ${newAccount.id} (total: ${_accounts.length})`);
+      console.warn(`[kilo] Added account ${newAccount.id}${accountEmail ? ` (${accountEmail})` : ""} (total: ${_accounts.length})`);
 
       return {
         refresh: result.token,
@@ -887,52 +897,11 @@ export default async function (pi: ExtensionAPI) {
       });
     }
 
-    if (ctx.hasUI) {
-      const totalBalance = _accounts.reduce(
-        (sum, a) => sum + (a.balance ?? 0),
-        0,
-      );
-      const healthy = _accounts.filter(
-        (a) => a.cooldownUntil <= Date.now() && (a.balance === null || a.balance > 0),
-      ).length;
-      const theme = ctx.ui.theme;
-      const label = `${healthy}/${_accounts.length} accts $${totalBalance.toFixed(2)}`;
-      ctx.ui.setStatus("kilo-credits", theme.fg("accent", label));
-    }
   });
 
-  pi.on("model_select", async (event, ctx) => {
-    if (event.model?.provider !== "kilo") return;
-    const cred = ctx.modelRegistry.authStorage.get("kilo");
-    if (cred?.type !== "oauth" || !ctx.hasUI) return;
+  pi.on("model_select", async (_event, _ctx) => {});
 
-    const totalBalance = _accounts.reduce(
-      (sum, a) => sum + (a.balance ?? 0),
-      0,
-    );
-    const healthy = _accounts.filter(
-      (a) => a.cooldownUntil <= Date.now() && (a.balance === null || a.balance > 0),
-    ).length;
-    const theme = ctx.ui.theme;
-    const label = `${healthy}/${_accounts.length} accts $${totalBalance.toFixed(2)}`;
-    ctx.ui.setStatus("kilo-credits", theme.fg("accent", label));
-  });
-
-  pi.on("turn_end", async (_event, ctx) => {
-    const cred = ctx.modelRegistry.authStorage.get("kilo");
-    if (cred?.type !== "oauth" || !ctx.hasUI) return;
-
-    const totalBalance = _accounts.reduce(
-      (sum, a) => sum + (a.balance ?? 0),
-      0,
-    );
-    const healthy = _accounts.filter(
-      (a) => a.cooldownUntil <= Date.now() && (a.balance === null || a.balance > 0),
-    ).length;
-    const theme = ctx.ui.theme;
-    const label = `${healthy}/${_accounts.length} accts $${totalBalance.toFixed(2)}`;
-    ctx.ui.setStatus("kilo-credits", theme.fg("accent", label));
-  });
+  pi.on("turn_end", async (_event, _ctx) => {});
 
   let tosShown = false;
 
@@ -1041,8 +1010,14 @@ export default async function (pi: ExtensionAPI) {
           }
           statsParts.push(contextPercentStr);
 
-          const creditsStatus = footerData.getExtensionStatuses().get("kilo-credits");
-          if (creditsStatus) statsParts.push(creditsStatus);
+          if (_lastActiveAccount && _accounts.length > 0) {
+            const a = _lastActiveAccount;
+            const idx = _accounts.findIndex((x) => x.accessToken === a.accessToken);
+            const num = idx >= 0 ? `#${idx + 1}` : "#?";
+            const name = a.email ? a.email.split("@")[0] : null;
+            const bal = a.balance !== null ? `$${a.balance.toFixed(2)}` : "?";
+            statsParts.push(name ? `${num}:${name} ${bal}` : `${num} ${bal}`);
+          }
 
           let statsLeft = statsParts.join(" ");
           let statsLeftWidth = visibleWidth(statsLeft);
