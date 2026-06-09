@@ -859,9 +859,13 @@ export default async function (pi: ExtensionAPI) {
       return;
     }
 
-    // Health check: fetch balance for all accounts, mark failures
+    // Health check: fetch balance + backfill email for all accounts
     for (const account of _accounts) {
       try {
+        if (!account.email) {
+          const profile = await fetchKiloProfile(account.accessToken);
+          account.email = profile.user?.email || profile.email;
+        }
         const balance = await fetchKiloBalance(account.accessToken, account.accountId);
         if (balance !== null) {
           account.balance = balance;
@@ -1013,7 +1017,7 @@ export default async function (pi: ExtensionAPI) {
           if (_lastActiveAccount && _accounts.length > 0) {
             const a = _lastActiveAccount;
             const idx = _accounts.findIndex((x) => x.accessToken === a.accessToken);
-            const num = idx >= 0 ? `#${idx + 1}` : "#?";
+            const num = idx >= 0 ? `#${idx + 1}/${_accounts.length}` : `#?/${_accounts.length}`;
             const name = a.email ? a.email.split("@")[0] : null;
             const bal = a.balance !== null ? `$${a.balance.toFixed(2)}` : "?";
             statsParts.push(name ? `${num}:${name} ${bal}` : `${num} ${bal}`);
