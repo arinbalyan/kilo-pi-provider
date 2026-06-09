@@ -514,6 +514,14 @@ function parsePrice(price: string | null | undefined): number {
   return parsed * 1_000_000;
 }
 
+function cleanModelId(id: string): string {
+  const idx = id.lastIndexOf(":");
+  if (idx === -1) return id;
+  const suffix = id.slice(idx + 1);
+  if (["off", "minimal", "low", "medium", "high", "xhigh", "none", "max", "instant"].includes(suffix)) return id;
+  return id.slice(0, idx);
+}
+
 function isFreeModel(m: OpenRouterModel): boolean {
   const prompt = parseFloat(m.pricing?.prompt ?? "1");
   const completion = parseFloat(m.pricing?.completion ?? "1");
@@ -655,7 +663,7 @@ function mapOpenRouterModel(m: OpenRouterModel): ProviderModelConfig {
   const api = shouldUseResponsesApi(m) ? ("openai-responses" as const) : undefined;
 
   return {
-    id: m.id,
+    id: cleanModelId(m.id),
     name: m.name,
     ...(api ? { api, baseUrl: KILO_OPENROUTER_BASE } : {}),
     reasoning: supportsReasoning,
@@ -808,7 +816,7 @@ export default async function (pi: ExtensionAPI) {
         const nonKilo = models.filter((m) => m.provider !== "kilo");
         const fullModels = cachedAllModels.map((m) => ({
           ...template,
-          id: m.id,
+    id: cleanModelId(m.id),
           name: m.name,
           api: m.api ?? template.api,
           baseUrl: m.baseUrl ?? template.baseUrl,
