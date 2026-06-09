@@ -1,0 +1,25 @@
+{
+  "name": "@kilocode/kilo-pi-provider",
+  "version": "1.2.0",
+  "type": "module",
+  "keywords": [
+    "pi-package"
+  ],
+  "license": "BSL-1.0",
+  "pi": {
+    "extensions": [
+      "./kilo.ts"
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Kilo-Org/kilo-pi-provider.git"
+  },
+  "private": true,
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}
