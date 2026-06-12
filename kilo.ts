@@ -525,11 +525,10 @@ function parsePrice(price: string | null | undefined): number {
 }
 
 function cleanModelId(id: string): string {
-  const idx = id.lastIndexOf(":");
-  if (idx === -1) return id;
-  const suffix = id.slice(idx + 1);
-  if (["off", "minimal", "low", "medium", "high", "xhigh", "none", "max", "instant"].includes(suffix)) return id;
-  return id.slice(0, idx);
+  // Keep the full model ID as-is. Pi's parseModelPattern tries the full match
+  // first (step 1 of its algorithm), so model IDs like "model:free" are matched
+  // exactly and not misinterpreted as having a thinking-level suffix.
+  return id;
 }
 
 function isFreeModel(m: OpenRouterModel): boolean {
