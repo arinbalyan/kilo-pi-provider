@@ -587,73 +587,66 @@ export default async function (pi: ExtensionAPI) {
       }
 
       // ═══════════════════════════════════════════════════════════════
-      // PRIMARY: Fetch usage from Kilo API for every stored account
+      // 1. Always scan session entries for per-model per-request data
+      //    (has real timestamps so 1h/24h/7d filtering is accurate)
       // ═══════════════════════════════════════════════════════════════
-      let dataSource: "api" | "fallback" = "api";
-      let sourceRecords: UsageRecordType[] = [];
+      const allRecords: UsageRecordType[] = [];
 
+      for (const entry of ctx.sessionManager.getEntries()) {
+        if (entry.type !== "message") continue;
+        const msg = entry.message as any;
+        if (msg.role !== "assistant") continue;
+        // Kilo models always have a "provider/model" format with "/"
+        // e.g. "anthropic/claude-sonnet-4", "google/gemini-2.0-flash"
+        if (ctx.model?.provider !== "kilo" && msg.provider !== "kilo") continue;
+        if (!msg.usage) continue;
+        if (!msg.model) continue;
+
+        // Use the first account for attribution (most accurate available)
+        const account = _accounts[0] ?? _lastActiveAccount;
+        if (!account) continue;
+
+        allRecords.push({
+          accountKey: account.email || `acct:${account.accessToken.slice(0, 8)}`,
+          accountEmail: account.email,
+          modelId: msg.model,
+          input: msg.usage.input,
+          output: msg.usage.output,
+          cacheRead: msg.usage.cacheRead,
+          cacheWrite: msg.usage.cacheWrite,
+          totalTokens: msg.usage.totalTokens,
+          cost: msg.usage.cost.total,
+          timestamp: new Date(entry.timestamp).getTime(),
+        });
+      }
+
+      // ═══════════════════════════════════════════════════════════════
+      // 2. ALSO fetch Kilo API daily aggregates for overall totals
+      //    (per-account, not per-model — marked as "↑all models↑")
+      // ═══════════════════════════════════════════════════════════════
+      let apiSucceeded = false;
       for (const account of _accounts) {
         if (!account.accessToken) continue;
-        const records = await fetchKiloUsage(
+        const dailyData = await fetchKiloUsage(
           account.accessToken,
           account.accountId,
         );
-        for (const day of records) {
-          sourceRecords.push(kiloDailyToUsageRecord(day, account.email, account.accessToken));
+        for (const day of dailyData) {
+          apiSucceeded = true;
+          allRecords.push(kiloDailyToUsageRecord(day, account.email, account.accessToken));
         }
       }
 
       // ═══════════════════════════════════════════════════════════════
-      // FALLBACK: API returned nothing — scan session + in-memory
-      // ═══════════════════════════════════════════════════════════════
-      if (sourceRecords.length === 0) {
-        dataSource = "fallback";
-        console.warn("[kilo] Usage API unavailable; falling back to session scan");
-
-        for (const entry of ctx.sessionManager.getEntries()) {
-          if (entry.type !== "message") continue;
-          if (entry.message.role !== "assistant") continue;
-          const msgModel = (entry.message as any).model ?? "";
-          const hasProvider = (entry.message as any).provider === "kilo";
-          const hasModel = msgModel.includes("/");
-          if (!hasProvider && !hasModel) continue;
-          const usage = (entry.message as any).usage;
-          if (!usage) continue;
-          const account = _lastActiveAccount;
-          if (account) {
-            recordUsage(account.email, account.accessToken, msgModel, usage);
-          }
-        }
-
-        // Get all memoized usage (no timestamp filter — fallback covers whole session)
-        const fallbackAggregates = getUsageByAccount(0);
-
-        // Build scopeAggs with same data for all scopes (no timestamps available)
-        const scopeAggs = SCOPES.map((s) => ({
-          key: s.key,
-          label: s.label,
-          items: fallbackAggregates,
-        }));
-
-        await ctx.ui.custom<void>((_tui, theme, _kb, done) => {
-          return new UsageReportComponent(
-            scopeAggs,
-            dataSource,
-            theme,
-            () => done(),
-          );
-        });
-        return;
-      }
-
-      // ═══════════════════════════════════════════════════════════════
-      // API data available — build per-scope aggregates with time filters
+      // 3. Build per-scope aggregates
       // ═══════════════════════════════════════════════════════════════
       const scopeAggs = SCOPES.map((s) => ({
         key: s.key,
         label: s.label,
-        items: buildAggregates(sourceRecords, s.since),
+        items: buildAggregates(allRecords, s.since),
       }));
+
+      const dataSource: "api" | "fallback" = apiSucceeded ? "api" : "fallback";
 
       await ctx.ui.custom<void>((_tui, theme, _kb, done) => {
         return new UsageReportComponent(
