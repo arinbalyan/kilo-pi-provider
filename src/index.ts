@@ -423,20 +423,25 @@ export default async function (pi: ExtensionAPI) {
   // Usage Report Command
   // =============================================================================
 
+  type UsageScope = "session" | "24h" | "1h";
+
   class UsageReportComponent {
     private aggregates: AccountAggregate[];
     private totalRequests: number;
+    private scope: UsageScope;
     private theme: Theme;
     private onClose: () => void;
 
     constructor(
       aggregates: AccountAggregate[],
       totalRequests: number,
+      scope: UsageScope,
       theme: Theme,
       onClose: () => void,
     ) {
       this.aggregates = aggregates;
       this.totalRequests = totalRequests;
+      this.scope = scope;
       this.theme = theme;
       this.onClose = onClose;
     }
@@ -451,9 +456,13 @@ export default async function (pi: ExtensionAPI) {
       const lines: string[] = [];
       const th = this.theme;
 
-      // ── Header ────────────────────────────────────────────────────────
+      // ── Header with Scope ────────────────────────────────────────────
       lines.push("");
-      const title = th.fg("accent", " Kilo Usage Report ");
+      const scopeLabel =
+        this.scope === "session"
+          ? "session"
+          : `last ${this.scope}`;
+      const title = `${th.fg("accent", " Kilo Usage Report ")}${th.fg("dim", ` • ${scopeLabel}`)} `;
       const titleWidth = visibleWidth(title);
       const sideLen = Math.max(0, Math.floor((width - titleWidth - 2) / 2));
       const sep = th.fg("borderMuted", "─".repeat(sideLen));
@@ -569,20 +578,33 @@ export default async function (pi: ExtensionAPI) {
   }
 
   pi.registerCommand("usage-kilo", {
-    description: "Show token usage per account and per model",
-    handler: async (_args, ctx) => {
+    description: "Show token usage per account and per model. Optional: /usage-kilo session, /usage-kilo 24h, /usage-kilo 1h (default: session)",
+    handler: async (args, ctx) => {
       if (ctx.mode !== "tui") {
         ctx.ui.notify("/usage-kilo requires interactive mode", "error");
         return;
       }
 
-      const aggregates = getUsageByAccount();
-      const totalRequests = getTotalRequests();
+      // Parse scope from first argument
+      const rawScope = (args[0] || "session").toLowerCase();
+      const scope: UsageScope =
+        rawScope === "24h" || rawScope === "24"
+          ? "24h"
+          : rawScope === "1h" || rawScope === "1"
+            ? "1h"
+            : "session";
+
+      const since =
+        scope === "session" ? 0 : Date.now() - (scope === "24h" ? 24 * 60 * 60 * 1000 : 60 * 60 * 1000);
+
+      const aggregates = getUsageByAccount(since);
+      const totalRequests = getTotalRequests(since);
 
       await ctx.ui.custom<void>((_tui, theme, _kb, done) => {
         return new UsageReportComponent(
           aggregates,
           totalRequests,
+          scope,
           theme,
           () => done(),
         );

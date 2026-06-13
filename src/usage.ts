@@ -3,11 +3,14 @@
  *
  * Accumulates data from assistant messages and provides aggregation
  * functions for the /usage-kilo command display.
+ * Supports filtering by time scope: session (all), last 24h, last 1h.
  */
 
 import type { Usage } from "@earendil-works/pi-ai";
 
 // ── Types ─────────────────────────────────────────────────────────────────
+
+export type UsageScope = "session" | "24h" | "1h";
 
 export interface UsageRecord {
   /** Account identifier (email or access token prefix) */
@@ -24,6 +27,8 @@ export interface UsageRecord {
   totalTokens: number;
   /** Cost in USD */
   cost: number;
+  /** Timestamp when this usage was recorded */
+  timestamp: number;
 }
 
 export interface ModelAggregate {
@@ -61,6 +66,7 @@ export function recordUsage(
   accessToken: string,
   modelId: string,
   usage: Usage,
+  timestamp: number = Date.now(),
 ): void {
   const accountKey = accountEmail || `acct:${accessToken.slice(0, 8)}`;
   _usageLog.push({
@@ -73,15 +79,34 @@ export function recordUsage(
     cacheWrite: usage.cacheWrite,
     totalTokens: usage.totalTokens,
     cost: usage.cost.total,
+    timestamp,
   });
+}
+
+// ── Scope Helpers ─────────────────────────────────────────────────────────
+
+/** Returns the cutoff timestamp for a given scope, or 0 for session (all). */
+export function scopeCutoff(scope: UsageScope): number {
+  switch (scope) {
+    case "1h":  return Date.now() - 60 * 60 * 1000;
+    case "24h": return Date.now() - 24 * 60 * 60 * 1000;
+    default:    return 0; // session = all records
+  }
+}
+
+/** Filters the usage log by the given scope. */
+function filteredRecords(since: number): UsageRecord[] {
+  if (since <= 0) return _usageLog;
+  return _usageLog.filter((r) => r.timestamp >= since);
 }
 
 // ── Aggregation ───────────────────────────────────────────────────────────
 
-export function getUsageByAccount(): AccountAggregate[] {
+export function getUsageByAccount(since: number = 0): AccountAggregate[] {
+  const records = filteredRecords(since);
   const byAccount = new Map<string, UsageRecord[]>();
 
-  for (const record of _usageLog) {
+  for (const record of records) {
     const list = byAccount.get(record.accountKey);
     if (list) {
       list.push(record);
@@ -158,8 +183,8 @@ export function getUsageByAccount(): AccountAggregate[] {
   return result;
 }
 
-export function getTotalRequests(): number {
-  return _usageLog.length;
+export function getTotalRequests(since: number = 0): number {
+  return filteredRecords(since).length;
 }
 
 export function resetUsage(): void {
