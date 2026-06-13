@@ -97,11 +97,16 @@ On `session_start`, every account's balance is fetched in parallel from `GET /ap
 
 ## Files
 
-Only three files are shipped:
-
-| File | Purpose |
+| Path | Purpose |
 |---|---|
-| `kilo.ts` | Provider extension — ~1100 lines |
+| `src/index.ts` | Extension entry point — registers provider, event handlers, footer |
+| `src/accounts.ts` | Multi-account management: load/save, round-robin, rate-limit tracking |
+| `src/auth.ts` | Device authorization flow: login and token refresh |
+| `src/api.ts` | Kilo API wrappers: profile, balance, organization selection |
+| `src/models.ts` | Model loading from Kilo/OpenRouter API and mapping to pi format |
+| `src/provider.ts` | Provider config and factory |
+| `src/constants.ts` | Constants, env helpers, shared utilities |
+| `kilo.ts` | Legacy entry point (re-exports from `src/index.ts` via package.json) |
 | `package.json` | Package metadata and Pi extension registration |
 | `README.md` | This file |
 

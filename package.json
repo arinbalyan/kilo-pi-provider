@@ -8,7 +8,7 @@
   "license": "BSL-1.0",
   "pi": {
     "extensions": [
-      "./kilo.ts"
+      "./src/index.ts"
     ]
   },
   "repository": {
