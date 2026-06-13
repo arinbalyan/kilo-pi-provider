@@ -55,21 +55,31 @@ export function saveAccounts(): void {
 }
 
 export function initAccounts(): void {
+  // Always prefer the token from auth.json (the canonical source of truth)
+  const authCreds = readStoredKiloCredentials();
+
   _accounts = loadAccounts();
   _strategy =
     process.env.KILO_STRATEGY === "fill-first" ? "fill-first" : "round-robin";
   _roundRobinIndex = 0;
 
-  // Migrate legacy single credential into account list if empty
-  if (_accounts.length === 0) {
-    const legacy = readStoredKiloCredentials();
-    if (legacy?.access) {
+  // If auth.json has a real Kilo credential, ensure it's in the accounts list
+  // This prevents stale test tokens from overwriting the real one.
+  if (authCreds?.access) {
+    const existing = _accounts.find((a) => a.accessToken === authCreds.access);
+    if (existing) {
+      // Update metadata from auth.json if anything changed
+      if (authCreds.accountId && authCreds.accountId !== existing.accountId) {
+        existing.accountId = authCreds.accountId;
+      }
+    } else {
+      // auth.json has a token not in accounts — add it
       _accounts.push({
         id: `acct-${Date.now()}`,
-        accessToken: legacy.access,
-        refreshToken: legacy.refresh ?? legacy.access,
-        expiresAt: legacy.expires ?? Date.now() + TOKEN_EXPIRATION_MS,
-        accountId: legacy.accountId,
+        accessToken: authCreds.access,
+        refreshToken: authCreds.refresh ?? authCreds.access,
+        expiresAt: authCreds.expires ?? Date.now() + TOKEN_EXPIRATION_MS,
+        accountId: authCreds.accountId,
         balance: null,
         consecutiveFailures: 0,
         cooldownUntil: 0,
@@ -77,6 +87,22 @@ export function initAccounts(): void {
       });
       saveAccounts();
     }
+  }
+
+  // If accounts list is still empty after auth.json check, try legacy migration
+  if (_accounts.length === 0 && authCreds?.access) {
+      _accounts.push({
+        id: `acct-${Date.now()}`,
+        accessToken: authCreds.access,
+        refreshToken: authCreds.refresh ?? authCreds.access,
+        expiresAt: authCreds.expires ?? Date.now() + TOKEN_EXPIRATION_MS,
+        accountId: authCreds.accountId,
+        balance: null,
+        consecutiveFailures: 0,
+        cooldownUntil: 0,
+        lastUsed: null,
+      });
+      saveAccounts();
   }
 }
 
