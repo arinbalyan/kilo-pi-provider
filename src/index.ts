@@ -218,6 +218,18 @@ export default async function (pi: ExtensionAPI) {
     );
   });
 
+  // ── Track rate limits from API responses ────────────────────────────
+  //
+  // When the Kilo API returns 429 (rate-limited), mark the last-used
+  // account as failed so pickAccount() skips it during cooldown.
+
+  pi.on("after_provider_response", async (event) => {
+    if (event.status !== 429) return;
+    const account = _lastActiveAccount;
+    if (!account) return;
+    markAccountFailure(account.accessToken);
+  });
+
   // ── Unused event stubs ─────────────────────────────────────────────────
 
   pi.on("model_select", async (_event, _ctx) => {});
@@ -515,9 +527,23 @@ export default async function (pi: ExtensionAPI) {
 
         for (const acct of scope.items) {
           const email = acct.accountEmail || th.fg("dim", acct.accountKey);
+          // Account health indicator
+          const ka = _accounts.find((a) => a.email === acct.accountEmail);
+          let healthBadge = "";
+          if (ka) {
+            const now = Date.now();
+            if (ka.cooldownUntil > now) {
+              const remaining = Math.ceil((ka.cooldownUntil - now) / 1000);
+              healthBadge = th.fg("warning", ` ⏸${remaining}s `);
+            } else if (ka.consecutiveFailures >= 3 || (ka.balance !== null && ka.balance <= 0 && ka.cooldownUntil === 0)) {
+              healthBadge = th.fg("error", " ✗ ");
+            } else {
+              healthBadge = th.fg("success", " ✓ ");
+            }
+          }
           lines.push(
             truncateToWidth(
-              `  ${th.fg("accent", "▶")} ${email}`,
+              `  ${th.fg("accent", "▶")}${healthBadge} ${email}`,
               width,
             ),
           );
@@ -596,11 +622,14 @@ export default async function (pi: ExtensionAPI) {
         if (entry.type !== "message") continue;
         const msg = entry.message as any;
         if (msg.role !== "assistant") continue;
-        // Kilo models always have a "provider/model" format with "/"
-        // e.g. "anthropic/claude-sonnet-4", "google/gemini-2.0-flash"
-        if (ctx.model?.provider !== "kilo" && msg.provider !== "kilo") continue;
+        // Kilo models have IDs like "google/gemini-2.0-flash" (with "/").
+        // Accept if: current model is Kilo, OR message has "kilo" provider,
+        // OR model name has "/" (OpenRouter-style, used by Kilo).
+        const msgModel = msg.model ?? "";
+        const hasSlash = msgModel.includes("/");
+        if (ctx.model?.provider !== "kilo" && msg.provider !== "kilo" && !hasSlash) continue;
         if (!msg.usage) continue;
-        if (!msg.model) continue;
+        if (!msgModel) continue;
 
         // Use the first account for attribution (most accurate available)
         const account = _accounts[0] ?? _lastActiveAccount;
@@ -609,13 +638,14 @@ export default async function (pi: ExtensionAPI) {
         allRecords.push({
           accountKey: account.email || `acct:${account.accessToken.slice(0, 8)}`,
           accountEmail: account.email,
-          modelId: msg.model,
+          modelId: msgModel,
           input: msg.usage.input,
           output: msg.usage.output,
           cacheRead: msg.usage.cacheRead,
           cacheWrite: msg.usage.cacheWrite,
           totalTokens: msg.usage.totalTokens,
           cost: msg.usage.cost.total,
+          requestCount: 1,
           timestamp: new Date(entry.timestamp).getTime(),
         });
       }

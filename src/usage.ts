@@ -80,6 +80,7 @@ export function recordUsage(
     cacheWrite: usage.cacheWrite,
     totalTokens: usage.totalTokens,
     cost: usage.cost.total,
+    requestCount: 1,
     timestamp,
   });
 }
@@ -148,7 +149,7 @@ export function getUsageByAccount(since: number = 0): AccountAggregate[] {
       };
 
       for (const r of modelRecords) {
-        agg.requests++;
+        agg.requests += r.requestCount ?? 1;
         agg.input += r.input;
         agg.output += r.output;
         agg.cacheRead += r.cacheRead;
@@ -244,7 +245,7 @@ export function buildAggregates(
         cost: 0,
       };
       for (const r of modelRecords) {
-        agg.requests++;
+        agg.requests += r.requestCount ?? 1;
         agg.input += r.input;
         agg.output += r.output;
         agg.cacheRead += r.cacheRead;
