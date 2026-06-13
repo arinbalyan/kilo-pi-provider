@@ -194,15 +194,26 @@ export default async function (pi: ExtensionAPI) {
 
   // ── Track usage from every assistant message ──────────────────────────
 
-  pi.on("message_end", async (event) => {
+  pi.on("message_end", async (event, ctx) => {
     const msg = event.message as any;
     if (msg.role !== "assistant") return;
-    if (msg.provider !== "kilo") return;
-    if (!_lastActiveAccount) return;
+    // Only track Kilo models. Check ctx.model.provider since the
+    // assistant message's provider field may reflect the upstream API
+    // (e.g. "google", "openai-completions") rather than "kilo".
+    if (ctx.model?.provider !== "kilo") return;
+    const account = _lastActiveAccount;
+    if (!account) {
+      console.warn("[kilo] message_end: no _lastActiveAccount, skipping usage");
+      return;
+    }
+    if (!msg.usage) {
+      console.warn("[kilo] message_end: no usage data in message");
+      return;
+    }
     recordUsage(
-      _lastActiveAccount.email,
-      _lastActiveAccount.accessToken,
-      msg.model,
+      account.email,
+      account.accessToken,
+      ctx.model?.id ?? msg.model,
       msg.usage,
     );
   });
