@@ -495,6 +495,12 @@ export default async function (pi: ExtensionAPI) {
           : th.fg("warning", " fallback (API unavailable) ");
       lines.push(truncateToWidth(`  ${sourceBadge}`, width));
 
+      const fmtNum = (n: number): string => {
+        if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+        if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+        return n.toLocaleString();
+      };
+
       // ── Totals row ───────────────────────────────────────────────────
       const scopeLabels = ["1h", "24h", "7d"];
       const totals = this.scopeAggs.map((s, i) => {
@@ -503,12 +509,6 @@ export default async function (pi: ExtensionAPI) {
       });
       lines.push(truncateToWidth(`  ${totals.join("  ·  ")}`, width));
       lines.push("");
-
-      const fmtNum = (n: number): string => {
-        if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-        if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
-        return n.toLocaleString();
-      };
 
       let anyData = false;
 
