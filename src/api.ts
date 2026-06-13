@@ -29,21 +29,19 @@ export interface KiloBalance {
   balance?: number;
 }
 
-export interface KiloUsageRecord {
-  model: string;
-  provider?: string;
-  input_tokens: number;
-  output_tokens: number;
-  cache_write_tokens?: number;
-  cache_hit_tokens?: number;
-  cost_microdollars: number;
-  created_at?: string;
+/** A single day of aggregated usage from the Kilo API. */
+export interface KiloDailyUsage {
+  date: string;
+  total_cost: number;
+  request_count: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_cache_write_tokens: number;
+  total_cache_hit_tokens: number;
 }
 
 export interface KiloUsageResponse {
-  requests?: KiloUsageRecord[];
-  usage?: KiloUsageRecord[];
-  data?: KiloUsageRecord[];
+  usage: KiloDailyUsage[];
 }
 
 // ── Profile ───────────────────────────────────────────────────────────────
@@ -144,10 +142,14 @@ export async function fetchKiloBalance(
  * Fetch usage history from Kilo API for a given account.
  * Calls GET /api/profile/usage with the account's bearer token.
  */
+/**
+ * Fetch daily usage history from Kilo API for a given account.
+ * Calls GET /api/profile/usage with the account's bearer token.
+ */
 export async function fetchKiloUsage(
   token: string,
   organizationId?: string,
-): Promise<KiloUsageRecord[]> {
+): Promise<KiloDailyUsage[]> {
   try {
     const response = await fetch(`${KILO_API_BASE}/api/profile/usage`, {
       headers: withOrganizationHeader(
@@ -168,15 +170,12 @@ export async function fetchKiloUsage(
 
     const data = (await response.json()) as KiloUsageResponse;
 
-    // Handle multiple possible response shapes
-    const records = data.requests ?? data.usage ?? data.data ?? [];
-
-    if (!Array.isArray(records)) {
+    if (!data.usage || !Array.isArray(data.usage)) {
       console.warn("[kilo] Usage API returned unexpected format");
       return [];
     }
 
-    return records as KiloUsageRecord[];
+    return data.usage;
   } catch (error) {
     console.warn(
       "[kilo] Failed to fetch usage:",

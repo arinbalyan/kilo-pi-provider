@@ -7,7 +7,7 @@
  */
 
 import type { Usage } from "@earendil-works/pi-ai";
-import type { KiloUsageRecord } from "./api";
+import type { KiloDailyUsage } from "./api";
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
@@ -281,34 +281,33 @@ export function buildAggregates(
 
 // ── API Conversion ────────────────────────────────────────────────────────
 
-/** Convert microdollars to USD. */
-const MICRO_PER_USD = 1_000_000;
-
 /**
- * Convert a Kilo API usage record + account identity into a UsageRecord.
+ * Convert a Kilo daily-aggregate API record + account identity into
+ * a UsageRecord. Since the API doesn't provide per-model breakdown,
+ * the modelId is set to "↑all models↑" so it's distinguishable from
+ * fine-grained session data.
  */
-export function kiloRecordToUsageRecord(
-  r: KiloUsageRecord,
+export function kiloDailyToUsageRecord(
+  day: KiloDailyUsage,
   accountEmail: string | undefined,
   accessToken: string,
 ): UsageRecord {
   const accountKey = accountEmail || `api:${accessToken.slice(0, 8)}`;
+  const total =
+    day.total_input_tokens +
+    day.total_output_tokens +
+    day.total_cache_write_tokens +
+    day.total_cache_hit_tokens;
   return {
     accountKey,
     accountEmail,
-    modelId: r.model,
-    input: r.input_tokens,
-    output: r.output_tokens,
-    cacheRead: r.cache_hit_tokens ?? 0,
-    cacheWrite: r.cache_write_tokens ?? 0,
-    totalTokens:
-      r.input_tokens +
-      r.output_tokens +
-      (r.cache_hit_tokens ?? 0) +
-      (r.cache_write_tokens ?? 0),
-    cost: r.cost_microdollars / MICRO_PER_USD,
-    timestamp: r.created_at
-      ? new Date(r.created_at).getTime()
-      : Date.now(),
+    modelId: `↑all models↑`,
+    input: day.total_input_tokens,
+    output: day.total_output_tokens,
+    cacheRead: day.total_cache_hit_tokens,
+    cacheWrite: day.total_cache_write_tokens,
+    totalTokens: total,
+    cost: day.total_cost,
+    timestamp: new Date(day.date).getTime(),
   };
 }

@@ -37,7 +37,7 @@ import {
   recordUsage,
   getUsageByAccount,
   buildAggregates,
-  kiloRecordToUsageRecord,
+  kiloDailyToUsageRecord,
   type AccountAggregate,
   type UsageRecord as UsageRecordType,
 } from "./usage";
@@ -598,8 +598,8 @@ export default async function (pi: ExtensionAPI) {
           account.accessToken,
           account.accountId,
         );
-        for (const r of records) {
-          sourceRecords.push(kiloRecordToUsageRecord(r, account.email, account.accessToken));
+        for (const day of records) {
+          sourceRecords.push(kiloDailyToUsageRecord(day, account.email, account.accessToken));
         }
       }
 
