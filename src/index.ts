@@ -540,10 +540,14 @@ export default async function (pi: ExtensionAPI) {
           let healthBadge = "";
           if (ka) {
             const now = Date.now();
-            if (ka.cooldownUntil > now) {
+            if (now >= ka.expiresAt) {
+              // Token expired
+              healthBadge = th.fg("error", " ✗ ");
+            } else if (ka.cooldownUntil > now) {
               const remaining = Math.ceil((ka.cooldownUntil - now) / 1000);
               healthBadge = th.fg("warning", ` ⏸${remaining}s `);
-            } else if (ka.consecutiveFailures >= 3 || (ka.balance !== null && ka.balance <= 0 && ka.cooldownUntil === 0)) {
+            } else if (ka.consecutiveFailures >= 3) {
+              // Depleted by rate limits
               healthBadge = th.fg("error", " ✗ ");
             } else {
               healthBadge = th.fg("success", " ✓ ");
