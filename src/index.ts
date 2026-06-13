@@ -494,6 +494,14 @@ export default async function (pi: ExtensionAPI) {
           ? th.fg("success", " Kilo API ")
           : th.fg("warning", " fallback (API unavailable) ");
       lines.push(truncateToWidth(`  ${sourceBadge}`, width));
+
+      // ── Totals row ───────────────────────────────────────────────────
+      const scopeLabels = ["1h", "24h", "7d"];
+      const totals = this.scopeAggs.map((s, i) => {
+        const total = s.items.reduce((sum, a) => sum + a.totalTokens, 0);
+        return `${scopeLabels[i]}: ${fmtNum(total)} tokens`;
+      });
+      lines.push(truncateToWidth(`  ${totals.join("  ·  ")}`, width));
       lines.push("");
 
       const fmtNum = (n: number): string => {
