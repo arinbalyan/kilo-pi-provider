@@ -1,7 +1,9 @@
-# Ignore everything except source files needed for the extension
+# Ignore everything except source files and tests
 /*
 !/src/
 !/src/**
+!/tests/
+!/tests/**
 !/*.ts
 !/*.json
 !/*.md
@@ -13,6 +15,3 @@ dist/
 .env*
 *.log
 .DS_Store
-
-# Local-only — tests run here but aren't shipped to users
-tests/
