@@ -7,6 +7,7 @@
  */
 
 import type { Usage } from "@earendil-works/pi-ai";
+import type { KiloUsageRecord } from "./api";
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
@@ -189,4 +190,125 @@ export function getTotalRequests(since: number = 0): number {
 
 export function resetUsage(): void {
   _usageLog.length = 0;
+}
+
+// ── Pure Aggregation (no side-effects) ────────────────────────────────────
+
+/**
+ * Build AccountAggregate[] from a raw UsageRecord[], filtered by `since`.
+ * Unlike getUsageByAccount() this does NOT read from _usageLog.
+ */
+export function buildAggregates(
+  records: UsageRecord[],
+  since: number = 0,
+): AccountAggregate[] {
+  const filtered = since > 0
+    ? records.filter((r) => r.timestamp >= since)
+    : records;
+
+  const byAccount = new Map<string, UsageRecord[]>();
+  for (const r of filtered) {
+    const list = byAccount.get(r.accountKey);
+    if (list) list.push(r);
+    else byAccount.set(r.accountKey, [r]);
+  }
+
+  const result: AccountAggregate[] = [];
+
+  for (const [accountKey, records] of byAccount) {
+    const byModel = new Map<string, UsageRecord[]>();
+    for (const r of records) {
+      const list = byModel.get(r.modelId);
+      if (list) list.push(r);
+      else byModel.set(r.modelId, [r]);
+    }
+
+    const models: ModelAggregate[] = [];
+    let accountRequests = 0;
+    let accountInput = 0;
+    let accountOutput = 0;
+    let accountCacheRead = 0;
+    let accountCacheWrite = 0;
+    let accountTotalTokens = 0;
+    let accountCost = 0;
+
+    for (const [modelId, modelRecords] of byModel) {
+      const agg: ModelAggregate = {
+        modelId,
+        requests: 0,
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: 0,
+      };
+      for (const r of modelRecords) {
+        agg.requests++;
+        agg.input += r.input;
+        agg.output += r.output;
+        agg.cacheRead += r.cacheRead;
+        agg.cacheWrite += r.cacheWrite;
+        agg.totalTokens += r.totalTokens;
+        agg.cost += r.cost;
+      }
+      models.push(agg);
+      accountRequests += agg.requests;
+      accountInput += agg.input;
+      accountOutput += agg.output;
+      accountCacheRead += agg.cacheRead;
+      accountCacheWrite += agg.cacheWrite;
+      accountTotalTokens += agg.totalTokens;
+      accountCost += agg.cost;
+    }
+
+    result.push({
+      accountKey,
+      accountEmail: records[0]!.accountEmail,
+      models,
+      requests: accountRequests,
+      input: accountInput,
+      output: accountOutput,
+      cacheRead: accountCacheRead,
+      cacheWrite: accountCacheWrite,
+      totalTokens: accountTotalTokens,
+      cost: accountCost,
+    });
+  }
+
+  return result;
+}
+
+// ── API Conversion ────────────────────────────────────────────────────────
+
+/** Convert microdollars to USD. */
+const MICRO_PER_USD = 1_000_000;
+
+/**
+ * Convert a Kilo API usage record + account identity into a UsageRecord.
+ */
+export function kiloRecordToUsageRecord(
+  r: KiloUsageRecord,
+  accountEmail: string | undefined,
+  accessToken: string,
+): UsageRecord {
+  const accountKey = accountEmail || `api:${accessToken.slice(0, 8)}`;
+  return {
+    accountKey,
+    accountEmail,
+    modelId: r.model,
+    input: r.input_tokens,
+    output: r.output_tokens,
+    cacheRead: r.cache_hit_tokens ?? 0,
+    cacheWrite: r.cache_write_tokens ?? 0,
+    totalTokens:
+      r.input_tokens +
+      r.output_tokens +
+      (r.cache_hit_tokens ?? 0) +
+      (r.cache_write_tokens ?? 0),
+    cost: r.cost_microdollars / MICRO_PER_USD,
+    timestamp: r.created_at
+      ? new Date(r.created_at).getTime()
+      : Date.now(),
+  };
 }

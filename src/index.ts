@@ -29,11 +29,19 @@ import {
   markAccountFailure,
   pickAccount,
 } from "./accounts";
-import { fetchKiloProfile, fetchKiloBalance } from "./api";
+import { fetchKiloProfile, fetchKiloBalance, fetchKiloUsage } from "./api";
 import { loginKilo, refreshKiloToken } from "./auth";
 import { cleanModelId, fetchKiloModels } from "./models";
 import { makeProviderConfig } from "./provider";
-import { recordUsage, getUsageByAccount, getTotalRequests, type AccountAggregate } from "./usage";
+import {
+  recordUsage,
+  getUsageByAccount,
+  getTotalRequests,
+  buildAggregates,
+  kiloRecordToUsageRecord,
+  type AccountAggregate,
+  type UsageRecord as UsageRecordType,
+} from "./usage";
 
 // =============================================================================
 // Extension Entry Point
@@ -193,23 +201,16 @@ export default async function (pi: ExtensionAPI) {
   });
 
   // ── Track usage from every assistant message ──────────────────────────
+  //
+  // Tries multiple strategies (message_end + session scan) to capture usage
+  // data even when the event payload doesn't include the expected fields.
 
   pi.on("message_end", async (event, ctx) => {
     const msg = event.message as any;
     if (msg.role !== "assistant") return;
-    // Only track Kilo models. Check ctx.model.provider since the
-    // assistant message's provider field may reflect the upstream API
-    // (e.g. "google", "openai-completions") rather than "kilo".
-    if (ctx.model?.provider !== "kilo") return;
+    if (ctx.model?.provider !== "kilo" && msg.provider !== "kilo") return;
     const account = _lastActiveAccount;
-    if (!account) {
-      console.warn("[kilo] message_end: no _lastActiveAccount, skipping usage");
-      return;
-    }
-    if (!msg.usage) {
-      console.warn("[kilo] message_end: no usage data in message");
-      return;
-    }
+    if (!account || !msg.usage) return;
     recordUsage(
       account.email,
       account.accessToken,
@@ -440,6 +441,8 @@ export default async function (pi: ExtensionAPI) {
     private aggregates: AccountAggregate[];
     private totalRequests: number;
     private scope: UsageScope;
+    private scopeDescription: string;
+    private dataSource: "api" | "fallback";
     private theme: Theme;
     private onClose: () => void;
 
@@ -447,12 +450,16 @@ export default async function (pi: ExtensionAPI) {
       aggregates: AccountAggregate[],
       totalRequests: number,
       scope: UsageScope,
+      scopeDescription: string,
+      dataSource: "api" | "fallback",
       theme: Theme,
       onClose: () => void,
     ) {
       this.aggregates = aggregates;
       this.totalRequests = totalRequests;
       this.scope = scope;
+      this.scopeDescription = scopeDescription;
+      this.dataSource = dataSource;
       this.theme = theme;
       this.onClose = onClose;
     }
@@ -467,7 +474,7 @@ export default async function (pi: ExtensionAPI) {
       const lines: string[] = [];
       const th = this.theme;
 
-      // ── Header with Scope ────────────────────────────────────────────
+      // ── Header ───────────────────────────────────────────────────────
       lines.push("");
       const scopeLabel =
         this.scope === "session"
@@ -478,6 +485,21 @@ export default async function (pi: ExtensionAPI) {
       const sideLen = Math.max(0, Math.floor((width - titleWidth - 2) / 2));
       const sep = th.fg("borderMuted", "─".repeat(sideLen));
       lines.push(truncateToWidth(`${sep}${title}${sep}`, width));
+
+      // ── Sub-header: data source + scope description ──────────────────
+      const sourceBadge =
+        this.dataSource === "api"
+          ? th.fg("success", " Kilo API ")  // green badge
+          : th.fg("warning", " fallback ");  // amber/yellow badge
+      const descColor = this.dataSource === "api"
+        ? th.fg("dim", this.scopeDescription)
+        : th.fg("warning", `${this.scopeDescription} (session scan — API unavailable)`);
+      lines.push(
+        truncateToWidth(
+          `  ${sourceBadge} ${descColor}`,
+          width,
+        ),
+      );
       lines.push("");
 
       if (this.aggregates.length === 0) {
@@ -608,14 +630,71 @@ export default async function (pi: ExtensionAPI) {
       const since =
         scope === "session" ? 0 : Date.now() - (scope === "24h" ? 24 * 60 * 60 * 1000 : 60 * 60 * 1000);
 
-      const aggregates = getUsageByAccount(since);
-      const totalRequests = getTotalRequests(since);
+      // ── Scope descriptions for the header ────────────────────────────────
+      const scopeDescription =
+        scope === "1h"
+          ? "requests made in the last hour"
+          : scope === "24h"
+            ? "requests made in the last 24 hours"
+            : "all requests recorded this session";
+
+      // ═══════════════════════════════════════════════════════════════
+      // PRIMARY: Fetch usage from Kilo API for every stored account
+      // ═══════════════════════════════════════════════════════════════
+      let apiRecords: UsageRecordType[] = [];
+      let dataSource: "api" | "fallback" = "api";
+
+      for (const account of _accounts) {
+        if (!account.accessToken) continue;
+        const records = await fetchKiloUsage(
+          account.accessToken,
+          account.accountId,
+        );
+        for (const r of records) {
+          apiRecords.push(kiloRecordToUsageRecord(r, account.email, account.accessToken));
+        }
+      }
+
+      // ═══════════════════════════════════════════════════════════════
+      // FALLBACK: API failed or returned nothing — scan session + in-memory
+      // ═══════════════════════════════════════════════════════════════
+      if (apiRecords.length === 0) {
+        dataSource = "fallback";
+
+        console.warn("[kilo] Usage API unavailable; falling back to session scan");
+
+        // Scan session entries for any Kilo assistant messages
+        for (const entry of ctx.sessionManager.getEntries()) {
+          if (entry.type !== "message") continue;
+          if (entry.message.role !== "assistant") continue;
+          const msgModel = (entry.message as any).model ?? "";
+          const hasProvider = (entry.message as any).provider === "kilo";
+          const hasModel = msgModel.includes("/");
+          if (!hasProvider && !hasModel) continue;
+          const usage = (entry.message as any).usage;
+          if (!usage) continue;
+          const account = _lastActiveAccount;
+          if (account) {
+            recordUsage(account.email, account.accessToken, msgModel, usage);
+          }
+        }
+      }
+
+      const aggregates = dataSource === "api"
+        ? buildAggregates(apiRecords, since)
+        : getUsageByAccount(since);
+
+      const totalRequests = dataSource === "api"
+        ? (since > 0 ? apiRecords.filter((r) => r.timestamp >= since).length : apiRecords.length)
+        : getTotalRequests(since);
 
       await ctx.ui.custom<void>((_tui, theme, _kb, done) => {
         return new UsageReportComponent(
           aggregates,
           totalRequests,
           scope,
+          scopeDescription,
+          dataSource,
           theme,
           () => done(),
         );

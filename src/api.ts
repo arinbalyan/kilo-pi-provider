@@ -4,6 +4,7 @@
 
 import type { OAuthLoginCallbacks } from "@earendil-works/pi-ai";
 import {
+  KILO_API_BASE,
   KILO_PROFILE_ENDPOINT,
   withOrganizationHeader,
   getEnvOrganizationId,
@@ -26,6 +27,23 @@ export interface KiloProfile {
 
 export interface KiloBalance {
   balance?: number;
+}
+
+export interface KiloUsageRecord {
+  model: string;
+  provider?: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_write_tokens?: number;
+  cache_hit_tokens?: number;
+  cost_microdollars: number;
+  created_at?: string;
+}
+
+export interface KiloUsageResponse {
+  requests?: KiloUsageRecord[];
+  usage?: KiloUsageRecord[];
+  data?: KiloUsageRecord[];
 }
 
 // ── Profile ───────────────────────────────────────────────────────────────
@@ -117,6 +135,54 @@ export async function fetchKiloBalance(
     return data.balance ?? null;
   } catch {
     return null;
+  }
+}
+
+// ── Usage History ─────────────────────────────────────────────────────────
+
+/**
+ * Fetch usage history from Kilo API for a given account.
+ * Calls GET /api/profile/usage with the account's bearer token.
+ */
+export async function fetchKiloUsage(
+  token: string,
+  organizationId?: string,
+): Promise<KiloUsageRecord[]> {
+  try {
+    const response = await fetch(`${KILO_API_BASE}/api/profile/usage`, {
+      headers: withOrganizationHeader(
+        {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        organizationId,
+      ),
+    });
+
+    if (!response.ok) {
+      console.warn(
+        `[kilo] Usage API returned ${response.status} for token`,
+      );
+      return [];
+    }
+
+    const data = (await response.json()) as KiloUsageResponse;
+
+    // Handle multiple possible response shapes
+    const records = data.requests ?? data.usage ?? data.data ?? [];
+
+    if (!Array.isArray(records)) {
+      console.warn("[kilo] Usage API returned unexpected format");
+      return [];
+    }
+
+    return records as KiloUsageRecord[];
+  } catch (error) {
+    console.warn(
+      "[kilo] Failed to fetch usage:",
+      error instanceof Error ? error.message : error,
+    );
+    return [];
   }
 }
 
