@@ -35,6 +35,7 @@ import { cleanModelId, fetchKiloModels } from "./models";
 import { makeProviderConfig } from "./provider";
 import {
   recordUsage,
+  getUsageRecords,
   getUsageByAccount,
   buildAggregates,
   kiloDailyToUsageRecord,
@@ -625,42 +626,10 @@ export default async function (pi: ExtensionAPI) {
       }
 
       // ═══════════════════════════════════════════════════════════════
-      // 1. Always scan session entries for per-model per-request data
-      //    (has real timestamps so 1h/24h/7d filtering is accurate)
+      // 1. Get per-model per-account data from in-memory tracking
+      //    (recorded by message_end handler with correct _lastActiveAccount)
       // ═══════════════════════════════════════════════════════════════
-      const allRecords: UsageRecordType[] = [];
-
-      for (const entry of ctx.sessionManager.getEntries()) {
-        if (entry.type !== "message") continue;
-        const msg = entry.message as any;
-        if (msg.role !== "assistant") continue;
-        // Kilo models have IDs like "google/gemini-2.0-flash" (with "/").
-        // Accept if: current model is Kilo, OR message has "kilo" provider,
-        // OR model name has "/" (OpenRouter-style, used by Kilo).
-        const msgModel = msg.model ?? "";
-        const hasSlash = msgModel.includes("/");
-        if (ctx.model?.provider !== "kilo" && msg.provider !== "kilo" && !hasSlash) continue;
-        if (!msg.usage) continue;
-        if (!msgModel) continue;
-
-        // Use the first account for attribution (most accurate available)
-        const account = _accounts[0] ?? _lastActiveAccount;
-        if (!account) continue;
-
-        allRecords.push({
-          accountKey: account.email || `acct:${account.accessToken.slice(0, 8)}`,
-          accountEmail: account.email,
-          modelId: msgModel,
-          input: msg.usage.input,
-          output: msg.usage.output,
-          cacheRead: msg.usage.cacheRead,
-          cacheWrite: msg.usage.cacheWrite,
-          totalTokens: msg.usage.totalTokens,
-          cost: msg.usage.cost.total,
-          requestCount: 1,
-          timestamp: new Date(entry.timestamp).getTime(),
-        });
-      }
+      const allRecords: UsageRecordType[] = getUsageRecords(0);
 
       // ═══════════════════════════════════════════════════════════════
       // 2. ALSO fetch Kilo API daily aggregates for overall totals
@@ -680,7 +649,7 @@ export default async function (pi: ExtensionAPI) {
       }
 
       // ═══════════════════════════════════════════════════════════════
-      // 3. Build per-scope aggregates
+      // 3. Merge: build per-scope aggregates
       // ═══════════════════════════════════════════════════════════════
       const scopeAggs = SCOPES.map((s) => ({
         key: s.key,

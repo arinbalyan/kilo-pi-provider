@@ -104,6 +104,11 @@ function filteredRecords(since: number): UsageRecord[] {
 
 // ── Aggregation ───────────────────────────────────────────────────────────
 
+/** Returns raw usage records from the in-memory log, optionally filtered by time. */
+export function getUsageRecords(since: number = 0): UsageRecord[] {
+  return filteredRecords(since);
+}
+
 export function getUsageByAccount(since: number = 0): AccountAggregate[] {
   const records = filteredRecords(since);
   const byAccount = new Map<string, UsageRecord[]>();
