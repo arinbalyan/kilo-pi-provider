@@ -11,8 +11,8 @@ import type {
   OAuthCredentials,
   OAuthLoginCallbacks,
 } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import type { ExtensionAPI, ProviderModelConfig, Theme } from "@earendil-works/pi-coding-agent";
+import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 import {
   getEnvOrganizationId,
@@ -33,6 +33,7 @@ import { fetchKiloProfile, fetchKiloBalance } from "./api";
 import { loginKilo, refreshKiloToken } from "./auth";
 import { cleanModelId, fetchKiloModels } from "./models";
 import { makeProviderConfig } from "./provider";
+import { recordUsage, getUsageByAccount, getTotalRequests, type AccountAggregate } from "./usage";
 
 // =============================================================================
 // Extension Entry Point
@@ -189,6 +190,21 @@ export default async function (pi: ExtensionAPI) {
         oauth: makeOAuthConfig(),
       });
     }
+  });
+
+  // ── Track usage from every assistant message ──────────────────────────
+
+  pi.on("message_end", async (event) => {
+    const msg = event.message as any;
+    if (msg.role !== "assistant") return;
+    if (msg.provider !== "kilo") return;
+    if (!_lastActiveAccount) return;
+    recordUsage(
+      _lastActiveAccount.email,
+      _lastActiveAccount.accessToken,
+      msg.model,
+      msg.usage,
+    );
   });
 
   // ── Unused event stubs ─────────────────────────────────────────────────
@@ -401,5 +417,176 @@ export default async function (pi: ExtensionAPI) {
         },
       };
     });
+  });
+
+  // =============================================================================
+  // Usage Report Command
+  // =============================================================================
+
+  class UsageReportComponent {
+    private aggregates: AccountAggregate[];
+    private totalRequests: number;
+    private theme: Theme;
+    private onClose: () => void;
+
+    constructor(
+      aggregates: AccountAggregate[],
+      totalRequests: number,
+      theme: Theme,
+      onClose: () => void,
+    ) {
+      this.aggregates = aggregates;
+      this.totalRequests = totalRequests;
+      this.theme = theme;
+      this.onClose = onClose;
+    }
+
+    handleInput(data: string): void {
+      if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
+        this.onClose();
+      }
+    }
+
+    render(width: number): string[] {
+      const lines: string[] = [];
+      const th = this.theme;
+
+      // ── Header ────────────────────────────────────────────────────────
+      lines.push("");
+      const title = th.fg("accent", " Kilo Usage Report ");
+      const titleWidth = visibleWidth(title);
+      const sideLen = Math.max(0, Math.floor((width - titleWidth - 2) / 2));
+      const sep = th.fg("borderMuted", "─".repeat(sideLen));
+      lines.push(truncateToWidth(`${sep}${title}${sep}`, width));
+      lines.push("");
+
+      if (this.aggregates.length === 0) {
+        lines.push(
+          truncateToWidth(
+            `  ${th.fg("dim", "No usage data yet. Start a conversation with a Kilo model.")}`,
+            width,
+          ),
+        );
+        lines.push("");
+        lines.push(truncateToWidth(`  ${th.fg("dim", "Press Escape to close")}`, width));
+        lines.push("");
+        return lines;
+      }
+
+      let grandTotalTokens = 0;
+      let grandTotalCost = 0;
+      let grandRequests = 0;
+
+      const fmtNum = (n: number): string => {
+        if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+        if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+        return n.toLocaleString();
+      };
+
+      for (const acct of this.aggregates) {
+        grandRequests += acct.requests;
+        grandTotalTokens += acct.totalTokens;
+        grandTotalCost += acct.cost;
+
+        // Account header
+        const email = acct.accountEmail || th.fg("dim", acct.accountKey);
+        lines.push(
+          truncateToWidth(
+            `  ${th.fg("accent", "▶")} ${email}`,
+            width,
+          ),
+        );
+
+        // Per-model rows
+        for (const m of acct.models) {
+          const modelLabel = th.fg("muted", m.modelId);
+          const inputStr = th.fg("text", fmtNum(m.input));
+          const outputStr = th.fg("text", fmtNum(m.output));
+          const crStr =
+            m.cacheRead > 0 ? th.fg("muted", `R:${fmtNum(m.cacheRead)}`) : "";
+          const cwStr =
+            m.cacheWrite > 0 ? th.fg("muted", `W:${fmtNum(m.cacheWrite)}`) : "";
+          const totalStr = th.fg("text", fmtNum(m.totalTokens));
+          const costStr =
+            m.cost > 0
+              ? th.fg("muted", `$${m.cost.toFixed(4)}`)
+              : th.fg("dim", "$0");
+          const reqStr = th.fg("dim", `${m.requests}x`);
+
+          let detail = `${reqStr} ${modelLabel}`;
+          detail += `  ↑${inputStr} ↓${outputStr}`;
+          if (crStr) detail += ` ${crStr}`;
+          if (cwStr) detail += ` ${cwStr}`;
+          detail += `  →${totalStr}`;
+          // Keep cost at right-aligned if enough room
+          const costPrefix = "  $";
+          const costDisplay = m.cost > 0 ? `$${m.cost.toFixed(4)}` : "$0";
+          // Use a simple separator
+          detail += `  ${th.fg("borderMuted", "|")}  ${costStr}`;
+
+          lines.push(truncateToWidth(`    ${detail}`, width));
+        }
+
+        // Account total line
+        const acctTotal = th.fg("text", fmtNum(acct.totalTokens));
+        const acctCostStr =
+          acct.cost > 0 ? `$${acct.cost.toFixed(4)}` : "$0";
+        lines.push(
+          truncateToWidth(
+            `  ${th.fg("borderMuted", "─".repeat(3))}  ${th.fg("accent", `total: ${acctTotal} tokens, ${acctCostStr}`)}`,
+            width,
+          ),
+        );
+        lines.push("");
+      }
+
+      // Grand total
+      const gtStr = th.fg("accent", fmtNum(grandTotalTokens));
+      const gcStr =
+        grandTotalCost > 0
+          ? th.fg("accent", `$${grandTotalCost.toFixed(4)}`)
+          : th.fg("dim", "$0");
+      lines.push(
+        truncateToWidth(
+          `  ${th.fg("borderMuted", "─".repeat(Math.max(10, Math.floor(width * 0.4))))}`,
+          width,
+        ),
+      );
+      lines.push(
+        truncateToWidth(
+          `  ${th.fg("accent", "Grand total")}: ${th.fg("text", `${gtStr} tokens`)} across ${th.fg("text", `${this.aggregates.length} accounts`)} (${th.fg("text", `${grandRequests} requests`)})  ${gcStr}`,
+          width,
+        ),
+      );
+
+      lines.push("");
+      lines.push(truncateToWidth(`  ${th.fg("dim", "Press Escape to close")}`, width));
+      lines.push("");
+      return lines;
+    }
+
+    invalidate(): void {}
+  }
+
+  pi.registerCommand("usage-kilo", {
+    description: "Show token usage per account and per model",
+    handler: async (_args, ctx) => {
+      if (ctx.mode !== "tui") {
+        ctx.ui.notify("/usage-kilo requires interactive mode", "error");
+        return;
+      }
+
+      const aggregates = getUsageByAccount();
+      const totalRequests = getTotalRequests();
+
+      await ctx.ui.custom<void>((_tui, theme, _kb, done) => {
+        return new UsageReportComponent(
+          aggregates,
+          totalRequests,
+          theme,
+          () => done(),
+        );
+      });
+    },
   });
 }
