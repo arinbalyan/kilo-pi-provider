@@ -1,0 +1,15 @@
+# Ignore everything except source files needed for the extension
+/*
+!/src/
+!/src/**
+!/*.ts
+!/*.json
+!/*.md
+!.gitignore
+
+# Still exclude common junk within src/ or root
+node_modules/
+dist/
+.env*
+*.log
+.DS_Store
