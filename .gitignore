@@ -13,3 +13,6 @@ dist/
 .env*
 *.log
 .DS_Store
+
+# Local-only — tests run here but aren't shipped to users
+tests/
