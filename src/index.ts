@@ -36,7 +36,6 @@ import { makeProviderConfig } from "./provider";
 import {
   recordUsage,
   getUsageByAccount,
-  getTotalRequests,
   buildAggregates,
   kiloRecordToUsageRecord,
   type AccountAggregate,
@@ -435,30 +434,25 @@ export default async function (pi: ExtensionAPI) {
   // Usage Report Command
   // =============================================================================
 
-  type UsageScope = "session" | "24h" | "1h";
+  const SCOPES = [
+    { key: "1h",  label: "Last 1 Hour",         since: Date.now() - 60 * 60 * 1000 },
+    { key: "24h", label: "Last 24 Hours",       since: Date.now() - 24 * 60 * 60 * 1000 },
+    { key: "7d",  label: "Last 7 Days",         since: Date.now() - 7 * 24 * 60 * 60 * 1000 },
+  ] as const;
 
   class UsageReportComponent {
-    private aggregates: AccountAggregate[];
-    private totalRequests: number;
-    private scope: UsageScope;
-    private scopeDescription: string;
+    private scopeAggs: { key: string; label: string; items: AccountAggregate[] }[];
     private dataSource: "api" | "fallback";
     private theme: Theme;
     private onClose: () => void;
 
     constructor(
-      aggregates: AccountAggregate[],
-      totalRequests: number,
-      scope: UsageScope,
-      scopeDescription: string,
+      scopeAggs: { key: string; label: string; items: AccountAggregate[] }[],
       dataSource: "api" | "fallback",
       theme: Theme,
       onClose: () => void,
     ) {
-      this.aggregates = aggregates;
-      this.totalRequests = totalRequests;
-      this.scope = scope;
-      this.scopeDescription = scopeDescription;
+      this.scopeAggs = scopeAggs;
       this.dataSource = dataSource;
       this.theme = theme;
       this.onClose = onClose;
@@ -476,48 +470,19 @@ export default async function (pi: ExtensionAPI) {
 
       // ── Header ───────────────────────────────────────────────────────
       lines.push("");
-      const scopeLabel =
-        this.scope === "session"
-          ? "session"
-          : `last ${this.scope}`;
-      const title = `${th.fg("accent", " Kilo Usage Report ")}${th.fg("dim", ` • ${scopeLabel}`)} `;
+      const title = `${th.fg("accent", " Kilo Usage Report ")}`;
       const titleWidth = visibleWidth(title);
       const sideLen = Math.max(0, Math.floor((width - titleWidth - 2) / 2));
       const sep = th.fg("borderMuted", "─".repeat(sideLen));
       lines.push(truncateToWidth(`${sep}${title}${sep}`, width));
 
-      // ── Sub-header: data source + scope description ──────────────────
+      // ── Sub-header: data source ──────────────────────────────────────
       const sourceBadge =
         this.dataSource === "api"
-          ? th.fg("success", " Kilo API ")  // green badge
-          : th.fg("warning", " fallback ");  // amber/yellow badge
-      const descColor = this.dataSource === "api"
-        ? th.fg("dim", this.scopeDescription)
-        : th.fg("warning", `${this.scopeDescription} (session scan — API unavailable)`);
-      lines.push(
-        truncateToWidth(
-          `  ${sourceBadge} ${descColor}`,
-          width,
-        ),
-      );
+          ? th.fg("success", " Kilo API ")
+          : th.fg("warning", " fallback (API unavailable) ");
+      lines.push(truncateToWidth(`  ${sourceBadge}`, width));
       lines.push("");
-
-      if (this.aggregates.length === 0) {
-        lines.push(
-          truncateToWidth(
-            `  ${th.fg("dim", "No usage data yet. Start a conversation with a Kilo model.")}`,
-            width,
-          ),
-        );
-        lines.push("");
-        lines.push(truncateToWidth(`  ${th.fg("dim", "Press Escape to close")}`, width));
-        lines.push("");
-        return lines;
-      }
-
-      let grandTotalTokens = 0;
-      let grandTotalCost = 0;
-      let grandRequests = 0;
 
       const fmtNum = (n: number): string => {
         if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -525,83 +490,86 @@ export default async function (pi: ExtensionAPI) {
         return n.toLocaleString();
       };
 
-      for (const acct of this.aggregates) {
-        grandRequests += acct.requests;
-        grandTotalTokens += acct.totalTokens;
-        grandTotalCost += acct.cost;
+      let anyData = false;
 
-        // Account header
-        const email = acct.accountEmail || th.fg("dim", acct.accountKey);
+      for (const scope of this.scopeAggs) {
         lines.push(
           truncateToWidth(
-            `  ${th.fg("accent", "▶")} ${email}`,
+            `  ${th.fg("accent", scope.label)}`,
             width,
           ),
         );
 
-        // Per-model rows
-        for (const m of acct.models) {
-          const modelLabel = th.fg("muted", m.modelId);
-          const inputStr = th.fg("text", fmtNum(m.input));
-          const outputStr = th.fg("text", fmtNum(m.output));
-          const crStr =
-            m.cacheRead > 0 ? th.fg("muted", `R:${fmtNum(m.cacheRead)}`) : "";
-          const cwStr =
-            m.cacheWrite > 0 ? th.fg("muted", `W:${fmtNum(m.cacheWrite)}`) : "";
-          const totalStr = th.fg("text", fmtNum(m.totalTokens));
-          const costStr =
-            m.cost > 0
-              ? th.fg("muted", `$${m.cost.toFixed(4)}`)
-              : th.fg("dim", "$0");
-          const reqStr = th.fg("dim", `${m.requests}x`);
-
-          let detail = `${reqStr} ${modelLabel}`;
-          detail += `  ↑${inputStr} ↓${outputStr}`;
-          if (crStr) detail += ` ${crStr}`;
-          if (cwStr) detail += ` ${cwStr}`;
-          detail += `  →${totalStr}`;
-          // Keep cost at right-aligned if enough room
-          const costPrefix = "  $";
-          const costDisplay = m.cost > 0 ? `$${m.cost.toFixed(4)}` : "$0";
-          // Use a simple separator
-          detail += `  ${th.fg("borderMuted", "|")}  ${costStr}`;
-
-          lines.push(truncateToWidth(`    ${detail}`, width));
+        if (scope.items.length === 0) {
+          lines.push(
+            truncateToWidth(
+              `    ${th.fg("dim", "No requests in this period.")}`,
+              width,
+            ),
+          );
+          lines.push("");
+          continue;
         }
 
-        // Account total line
-        const acctTotal = th.fg("text", fmtNum(acct.totalTokens));
-        const acctCostStr =
-          acct.cost > 0 ? `$${acct.cost.toFixed(4)}` : "$0";
+        anyData = true;
+
+        for (const acct of scope.items) {
+          const email = acct.accountEmail || th.fg("dim", acct.accountKey);
+          lines.push(
+            truncateToWidth(
+              `  ${th.fg("accent", "▶")} ${email}`,
+              width,
+            ),
+          );
+
+          for (const m of acct.models) {
+            const modelLabel = th.fg("muted", m.modelId);
+            const inputStr = th.fg("text", fmtNum(m.input));
+            const outputStr = th.fg("text", fmtNum(m.output));
+            const crStr =
+              m.cacheRead > 0 ? th.fg("muted", `R:${fmtNum(m.cacheRead)}`) : "";
+            const cwStr =
+              m.cacheWrite > 0 ? th.fg("muted", `W:${fmtNum(m.cacheWrite)}`) : "";
+            const totalStr = th.fg("text", fmtNum(m.totalTokens));
+            const costStr =
+              m.cost > 0
+                ? th.fg("muted", `$${m.cost.toFixed(4)}`)
+                : th.fg("dim", "$0");
+            const reqStr = th.fg("dim", `${m.requests}x`);
+
+            let detail = `${reqStr} ${modelLabel}`;
+            detail += `  ↑${inputStr} ↓${outputStr}`;
+            if (crStr) detail += ` ${crStr}`;
+            if (cwStr) detail += ` ${cwStr}`;
+            detail += `  →${totalStr}`;
+            detail += `  ${th.fg("borderMuted", "|")}  ${costStr}`;
+
+            lines.push(truncateToWidth(`    ${detail}`, width));
+          }
+
+          const acctTotal = th.fg("text", fmtNum(acct.totalTokens));
+          const acctCostStr =
+            acct.cost > 0 ? `$${acct.cost.toFixed(4)}` : "$0";
+          lines.push(
+            truncateToWidth(
+              `  ${th.fg("borderMuted", "─".repeat(3))}  ${th.fg("accent", `total: ${acctTotal} tokens, ${acctCostStr}`)}`,
+              width,
+            ),
+          );
+          lines.push("");
+        }
+      }
+
+      if (!anyData) {
         lines.push(
           truncateToWidth(
-            `  ${th.fg("borderMuted", "─".repeat(3))}  ${th.fg("accent", `total: ${acctTotal} tokens, ${acctCostStr}`)}`,
+            `  ${th.fg("dim", "No usage data yet. Start a conversation with a Kilo model.")}`,
             width,
           ),
         );
         lines.push("");
       }
 
-      // Grand total
-      const gtStr = th.fg("accent", fmtNum(grandTotalTokens));
-      const gcStr =
-        grandTotalCost > 0
-          ? th.fg("accent", `$${grandTotalCost.toFixed(4)}`)
-          : th.fg("dim", "$0");
-      lines.push(
-        truncateToWidth(
-          `  ${th.fg("borderMuted", "─".repeat(Math.max(10, Math.floor(width * 0.4))))}`,
-          width,
-        ),
-      );
-      lines.push(
-        truncateToWidth(
-          `  ${th.fg("accent", "Grand total")}: ${th.fg("text", `${gtStr} tokens`)} across ${th.fg("text", `${this.aggregates.length} accounts`)} (${th.fg("text", `${grandRequests} requests`)})  ${gcStr}`,
-          width,
-        ),
-      );
-
-      lines.push("");
       lines.push(truncateToWidth(`  ${th.fg("dim", "Press Escape to close")}`, width));
       lines.push("");
       return lines;
@@ -611,38 +579,18 @@ export default async function (pi: ExtensionAPI) {
   }
 
   pi.registerCommand("usage-kilo", {
-    description: "Show token usage per account and per model. Optional: /usage-kilo session, /usage-kilo 24h, /usage-kilo 1h (default: session)",
-    handler: async (args, ctx) => {
+    description: "Show token usage per account and per model across Last 1 Hour, Last 24 Hours, and Last 7 Days",
+    handler: async (_args, ctx) => {
       if (ctx.mode !== "tui") {
         ctx.ui.notify("/usage-kilo requires interactive mode", "error");
         return;
       }
 
-      // Parse scope from first argument
-      const rawScope = (args[0] || "session").toLowerCase();
-      const scope: UsageScope =
-        rawScope === "24h" || rawScope === "24"
-          ? "24h"
-          : rawScope === "1h" || rawScope === "1"
-            ? "1h"
-            : "session";
-
-      const since =
-        scope === "session" ? 0 : Date.now() - (scope === "24h" ? 24 * 60 * 60 * 1000 : 60 * 60 * 1000);
-
-      // ── Scope descriptions for the header ────────────────────────────────
-      const scopeDescription =
-        scope === "1h"
-          ? "requests made in the last hour"
-          : scope === "24h"
-            ? "requests made in the last 24 hours"
-            : "all requests recorded this session";
-
       // ═══════════════════════════════════════════════════════════════
       // PRIMARY: Fetch usage from Kilo API for every stored account
       // ═══════════════════════════════════════════════════════════════
-      let apiRecords: UsageRecordType[] = [];
       let dataSource: "api" | "fallback" = "api";
+      let sourceRecords: UsageRecordType[] = [];
 
       for (const account of _accounts) {
         if (!account.accessToken) continue;
@@ -651,19 +599,17 @@ export default async function (pi: ExtensionAPI) {
           account.accountId,
         );
         for (const r of records) {
-          apiRecords.push(kiloRecordToUsageRecord(r, account.email, account.accessToken));
+          sourceRecords.push(kiloRecordToUsageRecord(r, account.email, account.accessToken));
         }
       }
 
       // ═══════════════════════════════════════════════════════════════
-      // FALLBACK: API failed or returned nothing — scan session + in-memory
+      // FALLBACK: API returned nothing — scan session + in-memory
       // ═══════════════════════════════════════════════════════════════
-      if (apiRecords.length === 0) {
+      if (sourceRecords.length === 0) {
         dataSource = "fallback";
-
         console.warn("[kilo] Usage API unavailable; falling back to session scan");
 
-        // Scan session entries for any Kilo assistant messages
         for (const entry of ctx.sessionManager.getEntries()) {
           if (entry.type !== "message") continue;
           if (entry.message.role !== "assistant") continue;
@@ -678,22 +624,40 @@ export default async function (pi: ExtensionAPI) {
             recordUsage(account.email, account.accessToken, msgModel, usage);
           }
         }
+
+        // Get all memoized usage (no timestamp filter — fallback covers whole session)
+        const fallbackAggregates = getUsageByAccount(0);
+
+        // Build scopeAggs with same data for all scopes (no timestamps available)
+        const scopeAggs = SCOPES.map((s) => ({
+          key: s.key,
+          label: s.label,
+          items: fallbackAggregates,
+        }));
+
+        await ctx.ui.custom<void>((_tui, theme, _kb, done) => {
+          return new UsageReportComponent(
+            scopeAggs,
+            dataSource,
+            theme,
+            () => done(),
+          );
+        });
+        return;
       }
 
-      const aggregates = dataSource === "api"
-        ? buildAggregates(apiRecords, since)
-        : getUsageByAccount(since);
-
-      const totalRequests = dataSource === "api"
-        ? (since > 0 ? apiRecords.filter((r) => r.timestamp >= since).length : apiRecords.length)
-        : getTotalRequests(since);
+      // ═══════════════════════════════════════════════════════════════
+      // API data available — build per-scope aggregates with time filters
+      // ═══════════════════════════════════════════════════════════════
+      const scopeAggs = SCOPES.map((s) => ({
+        key: s.key,
+        label: s.label,
+        items: buildAggregates(sourceRecords, s.since),
+      }));
 
       await ctx.ui.custom<void>((_tui, theme, _kb, done) => {
         return new UsageReportComponent(
-          aggregates,
-          totalRequests,
-          scope,
-          scopeDescription,
+          scopeAggs,
           dataSource,
           theme,
           () => done(),
